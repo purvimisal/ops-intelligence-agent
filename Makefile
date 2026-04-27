@@ -3,14 +3,14 @@
 PYTHON := .venv/bin/python
 
 dev:
-	docker compose up -d
+	docker-compose up -d
 	@echo "Stack running. Postgres: 5432, Redis: 6379, Grafana: http://localhost:3000"
 
 stop:
-	docker compose down
+	docker-compose down
 
 clean:
-	docker compose down -v
+	docker-compose down -v
 
 test:
 	$(PYTHON) -m pytest tests/ -v --tb=short

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncpg
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -64,14 +66,31 @@ async def init_db() -> None:
                 resolved_at  TIMESTAMPTZ
             )
         """)
+        # Drop chunks table if it was created with a different embedding dimension
+        await conn.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    WHERE c.relname = 'chunks'
+                      AND a.attname = 'embedding'
+                      AND a.atttypmod <> 768
+                      AND a.attnum > 0
+                ) THEN
+                    DROP TABLE chunks CASCADE;
+                END IF;
+            END $$
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS chunks (
-                id         BIGSERIAL PRIMARY KEY,
-                runbook    TEXT NOT NULL,
-                section    TEXT NOT NULL,
-                content    TEXT NOT NULL,
-                embedding  vector(1536),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                id           BIGSERIAL PRIMARY KEY,
+                runbook      TEXT NOT NULL,
+                section      TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                embedding    vector(768),
+                content_hash TEXT UNIQUE,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
         await conn.execute("""
