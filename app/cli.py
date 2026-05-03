@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import asyncio
+import json
+
 import click
 
 
@@ -28,11 +33,9 @@ def simulate(scenario: str) -> None:
 @click.option("--no-agent", is_flag=True, help="Skip agent RCA, detection only.")
 def detect(scenario: str, no_agent: bool) -> None:
     """Run detection pipeline + agent RCA against a named failure scenario."""
-    import asyncio
-    import json
     from app.core.config import settings
-    from app.ingestion.generator import SyntheticIngester, build_scenario
     from app.detection import DetectionPipeline
+    from app.ingestion.generator import SyntheticIngester, build_scenario
 
     async def _run() -> None:
         try:
@@ -84,13 +87,12 @@ def detect(scenario: str, no_agent: bool) -> None:
         click.echo("═" * 95)
 
         try:
-            from app.core.db import get_pool, init_db, close_pool
             from app.agent.orchestrator import OrchestratorAgent
+            from app.core.db import close_pool, get_pool, init_db
 
             await init_db()
             pool = await get_pool()
 
-            # Persist all metric signals so tools have data to query
             async with pool.acquire() as db:
                 for sig in signals:
                     if sig.signal_type == "metric" and sig.metrics:
@@ -159,35 +161,282 @@ def detect(scenario: str, no_agent: bool) -> None:
 
 @cli.command()
 def status() -> None:
-    """Show live risk scores for all monitored services."""
-    click.echo("Risk scores: (live streaming not yet wired — use `detect <scenario>` for now)")
+    """Show latest risk scores for all monitored services."""
+    from app.core.db import close_pool, get_pool, init_db
+
+    async def _run() -> None:
+        await init_db()
+        pool = await get_pool()
+
+        async with pool.acquire() as db:
+            rows = await db.fetch(
+                """
+                SELECT DISTINCT ON (service)
+                    service, score, top_signal, time_to_incident_min, ts
+                FROM risk_scores
+                ORDER BY service, ts DESC
+                """
+            )
+
+        await close_pool()
+
+        if not rows:
+            click.echo("No risk scores found. Run `detect <scenario>` to generate data.")
+            return
+
+        click.echo(f"\n{'Service':<25} {'Score':>6}  {'Level':<8}  {'ETA':>8}  Top Signal")
+        click.echo("─" * 95)
+
+        for r in sorted(rows, key=lambda x: x["score"], reverse=True):
+            score = float(r["score"])
+            if score > 70:
+                fg = "red"
+                level = "HIGH"
+            elif score > 50:
+                fg = "yellow"
+                level = "MED"
+            else:
+                fg = "green"
+                level = "OK"
+
+            score_str = click.style(f"{score:6.1f}", fg=fg, bold=True)
+            ttm = r["time_to_incident_min"]
+            ttm_str = f"{ttm:.0f}m" if ttm is not None else "  —"
+            top = (r["top_signal"] or "—")[:45]
+            click.echo(
+                f"  {r['service']:<23} {score_str}  {level:<8}  {ttm_str:>8}  {top}"
+            )
+
+    asyncio.run(_run())
+
+
+@cli.command()
+def incidents() -> None:
+    """Show last 10 incidents with RCA summaries."""
+    from app.core.db import close_pool, get_pool, init_db
+
+    async def _run() -> None:
+        await init_db()
+        pool = await get_pool()
+
+        async with pool.acquire() as db:
+            rows = await db.fetch(
+                """
+                SELECT id, service, severity, summary, created_at
+                FROM incidents
+                ORDER BY created_at DESC
+                LIMIT 10
+                """
+            )
+
+        await close_pool()
+
+        if not rows:
+            click.echo("No incidents found.")
+            return
+
+        _SEVERITY_FG = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow", "LOW": "green"}
+
+        click.echo(
+            f"\n{'ID':>5}  {'Service':<20}  {'Severity':<10}  {'Created At':<22}  Summary"
+        )
+        click.echo("─" * 100)
+        for r in rows:
+            sev_str = click.style(
+                f"{r['severity']:<10}", fg=_SEVERITY_FG.get(r["severity"], "white"), bold=True
+            )
+            summary_short = (r["summary"][:50] + "…") if len(r["summary"]) > 50 else r["summary"]
+            click.echo(
+                f"  {r['id']:>4}  {r['service']:<20}  {sev_str}  "
+                f"{str(r['created_at'])[:22]:<22}  {summary_short}"
+            )
+
+    asyncio.run(_run())
 
 
 @cli.command()
 @click.argument("service")
 def explain(service: str) -> None:
     """Ask the agent to explain current risk elevation for a service."""
-    click.echo(f"Agent explanation for {service}: (agent layer not yet implemented — Day 3)")
+    from app.core.db import close_pool, get_pool, init_db
+
+    async def _run() -> None:
+        await init_db()
+        pool = await get_pool()
+
+        async with pool.acquire() as db:
+            row = await db.fetchrow(
+                """
+                SELECT score, trend_score, pattern_score, llm_score,
+                       top_signal, time_to_incident_min
+                FROM risk_scores
+                WHERE service = $1
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                service,
+            )
+
+        if row is None:
+            click.echo(f"No risk score for '{service}'. Run `detect <scenario>` first.")
+            await close_pool()
+            return
+
+        from app.agent.orchestrator import OrchestratorAgent
+        from app.detection.scorer import RiskScore
+
+        rs = RiskScore(
+            service=service,
+            score=float(row["score"]),
+            anomaly_score=float(row["llm_score"] or 0.0),
+            trend_score=float(row["trend_score"] or 0.0),
+            pattern_score=float(row["pattern_score"] or 0.0),
+            time_to_incident_min=row["time_to_incident_min"],
+            top_signals=[row["top_signal"]] if row["top_signal"] else [],
+        )
+
+        click.echo(f"\nInvestigating '{service}' (score: {rs.score:.1f}/100) …")
+        agent = OrchestratorAgent(db_pool=pool, langfuse=None)
+        result = await agent.investigate(rs)
+
+        click.echo(f"\nSeverity  : {result.get('severity', '—')}")
+        click.echo(f"Summary   : {result.get('summary', '—')}")
+        click.echo(f"\nRoot cause:\n  {result.get('root_cause', '—')}")
+
+        hyps = result.get("hypotheses", [])
+        if hyps:
+            click.echo("\nHypotheses:")
+            for i, h in enumerate(hyps, 1):
+                click.echo(f"  {i}. {h}")
+
+        steps = result.get("fix_steps", [])
+        if steps:
+            click.echo("\nFix steps:")
+            for i, s in enumerate(steps, 1):
+                click.echo(f"  {i}. {s}")
+
+        if result.get("degraded_mode"):
+            click.echo("\n[DEGRADED MODE]")
+
+        await close_pool()
+
+    asyncio.run(_run())
 
 
 @cli.command()
-def incidents() -> None:
-    """Show last 10 incidents with RCA summaries."""
-    click.echo("Incidents: (agent layer not yet implemented — Day 3)")
+def briefing() -> None:
+    """Generate on-call briefing and send to Slack if webhook is configured."""
+    from app.alerts.slack import SlackAlerter
+    from app.core.config import settings
+    from app.core.db import close_pool, get_pool, init_db
+
+    async def _run() -> None:
+        await init_db()
+        pool = await get_pool()
+
+        async with pool.acquire() as db:
+            rows = await db.fetch(
+                """
+                SELECT DISTINCT ON (service)
+                    service, score, top_signal, time_to_incident_min
+                FROM risk_scores
+                ORDER BY service, ts DESC
+                """
+            )
+
+        await close_pool()
+
+        top_services = sorted(
+            [
+                {
+                    "service": r["service"],
+                    "score": float(r["score"]),
+                    "top_signal": r["top_signal"] or "—",
+                    "time_to_incident_min": r["time_to_incident_min"],
+                }
+                for r in rows
+            ],
+            key=lambda x: x["score"],
+            reverse=True,
+        )[:3]
+
+        click.echo("\n📋 On-Call Briefing — Top Services at Risk")
+        click.echo("─" * 55)
+
+        if not top_services:
+            click.echo("No risk scores found.")
+            return
+
+        for svc in top_services:
+            score = svc["score"]
+            fg = "red" if score > 70 else "yellow" if score > 50 else "green"
+            score_str = click.style(f"{score:.1f}", fg=fg, bold=True)
+            ttm = svc["time_to_incident_min"]
+            ttm_str = f"{ttm:.0f} min" if ttm else "—"
+            click.echo(f"  {svc['service']:<25} Score: {score_str}/100  ETA: {ttm_str}")
+            click.echo(f"    {svc['top_signal'][:70]}")
+
+        alerter = SlackAlerter(settings.slack_webhook_url)
+        await alerter.send_on_call_briefing(top_services)
+
+        if settings.slack_webhook_url:
+            click.echo("\nBriefing sent to Slack ✓")
+        else:
+            click.echo("\n(Slack not configured — set SLACK_WEBHOOK_URL to enable)")
+
+    asyncio.run(_run())
+
+
+@cli.command(name="dlq-status")
+def dlq_status() -> None:
+    """Show DLQ length and oldest item."""
+    from app.core.config import settings
+    from app.core.redis_client import RedisClient
+
+    async def _run() -> None:
+        client = RedisClient(settings.redis_url)
+        await client.connect()
+
+        if not client.available:
+            click.echo("Redis unavailable — cannot check DLQ.")
+            return
+
+        length = await client.dlq_length()
+        click.echo(f"DLQ length: {length}")
+
+        if length > 0:
+            try:
+                import redis.asyncio as aioredis
+
+                r = aioredis.from_url(settings.redis_url, decode_responses=True)
+                raw = await r.lindex("dlq:incidents", 0)
+                await r.aclose()
+                if raw:
+                    item = json.loads(raw)
+                    click.echo(
+                        f"Oldest item: service={item.get('service', '?')}"
+                        f"  retry_count={item.get('retry_count', 0)}"
+                        f"  error={item.get('last_error', '—')[:60]}"
+                    )
+            except Exception as exc:
+                click.echo(f"Could not peek at DLQ item: {exc}")
+
+        await client.close()
+
+    asyncio.run(_run())
 
 
 @cli.command(name="ingest-runbooks")
 def ingest_runbooks() -> None:
     """Ingest runbook markdown files into pgvector knowledge base."""
-    import asyncio
-    import json
     from pathlib import Path
-    from app.core.config import settings
+
     from app.core.db import get_pool, init_db
     from app.agent.runbook_ingester import RunbookIngester
 
     async def _run() -> None:
         from app.agent.embedder import LocalEmbedder
+
         await init_db()
         pool = await get_pool()
         embedder = LocalEmbedder()

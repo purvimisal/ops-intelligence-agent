@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from typing import Any, List
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +38,21 @@ class Settings(BaseSettings):
     window_size_min: int = 5
     trend_window_steps: int = 10
     pattern_similarity_threshold: float = 0.75
+
+    # --- Monitored services (comma-separated env var or list) ---
+    monitored_services: List[str] = [
+        "kafka-consumer",
+        "pricing-engine",
+        "audit-service",
+        "payment-processor",
+    ]
+
+    @field_validator("monitored_services", mode="before")
+    @classmethod
+    def _parse_monitored_services(cls, v: Any) -> List[str]:
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
 
 
 settings = Settings()

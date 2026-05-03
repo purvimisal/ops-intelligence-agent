@@ -100,16 +100,25 @@ async def init_db() -> None:
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS risk_scores (
-                id           BIGSERIAL PRIMARY KEY,
-                service      TEXT NOT NULL,
-                score        FLOAT NOT NULL,
-                trend_score  FLOAT,
-                pattern_score FLOAT,
-                llm_score    FLOAT,
-                scenario     TEXT,
-                ts           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                id                   BIGSERIAL PRIMARY KEY,
+                service              TEXT NOT NULL,
+                score                FLOAT NOT NULL,
+                trend_score          FLOAT,
+                pattern_score        FLOAT,
+                llm_score            FLOAT,
+                top_signal           TEXT,
+                time_to_incident_min FLOAT,
+                scenario             TEXT,
+                ts                   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        # Idempotent column additions for tables that pre-date this migration
+        await conn.execute(
+            "ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS top_signal TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE risk_scores ADD COLUMN IF NOT EXISTS time_to_incident_min FLOAT"
+        )
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS risk_scores_service_ts_idx
             ON risk_scores (service, ts DESC)

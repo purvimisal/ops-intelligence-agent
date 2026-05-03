@@ -1,4 +1,4 @@
-.PHONY: dev test eval ingest lint stop clean detect
+.PHONY: dev test eval ingest lint stop clean detect serve
 
 PYTHON := .venv/bin/python
 
@@ -23,6 +23,9 @@ ingest:
 
 detect:
 	$(PYTHON) -m app.cli detect $(SCENARIO)
+
+serve:
+	$(PYTHON) -m uvicorn app.api.main:app --reload --port 8000
 
 lint:
 	$(PYTHON) -m ruff check app/ tests/ evals/

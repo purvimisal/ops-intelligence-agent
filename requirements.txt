@@ -20,3 +20,5 @@ rank-bm25==0.2.2
 slack-sdk==3.34.0
 hypothesis==6.123.1
 scikit-learn==1.5.2
+redis[asyncio]>=4.6.0
+APScheduler>=3.10.0,<4.0.0
