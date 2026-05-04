@@ -1,0 +1,32 @@
+app = "ops-intelligence-agent"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  PYTHONUNBUFFERED = "1"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    path = "/api/v1/health"
+    timeout = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+# Secrets are set via: fly secrets set KEY=value
+# Required: ANTHROPIC_API_KEY, OPENAI_API_KEY, DATABASE_URL,
+#           REDIS_URL, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
+# Optional: SLACK_WEBHOOK_URL

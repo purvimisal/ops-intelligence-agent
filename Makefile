@@ -1,6 +1,8 @@
-.PHONY: dev test eval ingest lint stop clean detect serve
+.PHONY: dev test eval ingest lint stop clean detect serve \
+        docker-build docker-run deploy deploy-logs
 
 PYTHON := .venv/bin/python
+IMAGE  := ops-intelligence-agent
 
 dev:
 	docker-compose up -d
@@ -30,3 +32,20 @@ serve:
 lint:
 	$(PYTHON) -m ruff check app/ tests/ evals/
 	$(PYTHON) -m ruff format --check app/ tests/ evals/
+
+docker-build:
+	docker build -t $(IMAGE) .
+
+docker-run:
+	docker run --rm -p 8000:8000 \
+		--env-file .env \
+		--add-host=host.docker.internal:host-gateway \
+		$(IMAGE)
+
+deploy:
+	fly deploy
+	@echo ""
+	@echo "Live: https://ops-intelligence-agent.fly.dev/api/v1/health"
+
+deploy-logs:
+	fly logs --tail

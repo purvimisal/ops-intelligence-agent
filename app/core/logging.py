@@ -1,3 +1,4 @@
+"""Structured JSON logging setup via structlog."""
 import logging
 import structlog
 

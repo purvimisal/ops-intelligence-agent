@@ -1,3 +1,4 @@
+"""Pydantic-settings config — all values read from environment / .env file."""
 from __future__ import annotations
 
 from typing import Any, List
