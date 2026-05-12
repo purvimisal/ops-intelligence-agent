@@ -1,6 +1,6 @@
 # Ops Intelligence Agent
 
-AI-powered backend system that detects infrastructure anomalies before they become incidents, then drives a structured RCA using an LLM agent. Built on four years of on-call experience with Oracle OCI's distributed billing infrastructure — where ~70% of incident time is toil.
+AI-powered backend system that detects infrastructure anomalies before they become incidents, then drives a structured RCA using an LLM agent. Built on four years of on-call experience for systems where ~70% of incident time is toil.
 
 ## Live demo
 
